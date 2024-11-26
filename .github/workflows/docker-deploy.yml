@@ -43,11 +43,12 @@ jobs:
         ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
 
     - name: SSH into server and deploy Docker container
-      run: |
-        ssh -o StrictHostKeyChecking=no ${SERVER_USERNAME}@${SERVER_HOST} << EOF
-        docker pull m0ln1z/my-fastapi-app:latest  # Загружает последний образ
-        docker stop my-fastapi-app || true  # Останавливает контейнер, если он запущен
-        docker rm my-fastapi-app || true  # Удаляет старый контейнер
-        docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest  # Запуск контейнера
-        EOF
+  run: |
+    ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${SERVER_USERNAME}@${SERVER_HOST} << EOF
+    docker pull m0ln1z/my-fastapi-app:latest
+    docker stop my-fastapi-app || true
+    docker rm my-fastapi-app || true
+    docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest
+    EOF
+
 
