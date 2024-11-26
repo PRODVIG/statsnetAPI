@@ -34,17 +34,6 @@ jobs:
     needs: build  
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
-
-    # Загрузка приватного ключа Deploy Key напрямую из файла
-    - name: Add Deploy Key to SSH Agent
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa.pub
-        chmod 600 ~/.ssh/id_rsa.pub
-        ssh-add ~/.ssh/id_rsa.pub
-
     - name: SSH into server and deploy Docker container
       uses: appleboy/ssh-action@master
       with:
@@ -52,12 +41,8 @@ jobs:
         username: ${{ secrets.SERVER_USERNAME }}
         password: ${{ secrets.SERVER_PASSWORD }}
         script: |
-          # Отладочная информация
-          echo "SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}"
-          echo "SERVER_HOST: ${{ secrets.SERVER_HOST }}"
-
-          # Деплой
-          docker pull m0ln1z/my-fastapi-app:latest
-          docker stop my-fastapi-app || true
-          docker rm my-fastapi-app || true
-          docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest
+          # Деплой Docker-контейнера
+          docker pull m0ln1z/my-fastapi-app:latest  # Загружаем обновлённый образ
+          docker stop my-fastapi-app || true  # Останавливаем старый контейнер, если он работает
+          docker rm my-fastapi-app || true  # Удаляем старый контейнер, если он существует
+          docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest  # Запускаем новый контейнер
