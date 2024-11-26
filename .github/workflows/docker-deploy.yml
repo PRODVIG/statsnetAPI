@@ -3,7 +3,7 @@ name: Build, Push and Deploy Docker Image
 on:
   push:
     branches:
-      - main 
+      - main
 
 jobs:
   build:
@@ -43,12 +43,18 @@ jobs:
         ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
 
     - name: SSH into server and deploy Docker container
-  run: |
-    ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${SERVER_USERNAME}@${SERVER_HOST} << EOF
-    docker pull m0ln1z/my-fastapi-app:latest
-    docker stop my-fastapi-app || true
-    docker rm my-fastapi-app || true
-    docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest
-    EOF
-
-
+      run: |
+        # Убедитесь, что ключ доступен через ssh-agent
+        eval $(ssh-agent -s)
+        echo "${{ secrets.SERVER_SSH_KEY }}" | ssh-add -  # Добавляем ключ в агент
+        # Печатаем отладочную информацию для проверки переменных
+        echo "SERVER_USERNAME: ${SERVER_USERNAME}"
+        echo "SERVER_HOST: ${SERVER_HOST}"
+        
+        # Подключение по SSH и выполнение команд
+        ssh -o StrictHostKeyChecking=no ${SERVER_USERNAME}@${SERVER_HOST} << EOF
+        docker pull m0ln1z/my-fastapi-app:latest  # Загружает последний образ
+        docker stop my-fastapi-app || true  # Останавливает контейнер, если он запущен
+        docker rm my-fastapi-app || true  # Удаляет старый контейнер
+        docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest  # Запуск контейнера
+        EOF
