@@ -31,9 +31,10 @@ jobs:
       - name: Build Docker image
         run: docker build -t my-fastapi-app .
 
-      # Публикация Docker образа в Docker Hub (если нужно)
+      # Публикация Docker образа в ваш собственный репозиторий на Docker Hub
       - name: Push Docker image to Docker Hub
-        run: docker push my-fastapi-app
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/my-fastapi-app:latest
+
 
       # Установка SSH ключа для доступа к серверу
       - name: Set up SSH key
