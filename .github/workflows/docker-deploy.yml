@@ -41,9 +41,9 @@ jobs:
     - name: Add Deploy Key to SSH Agent
       run: |
         mkdir -p ~/.ssh
-        echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
-        chmod 600 ~/.ssh/deploy_key
-        ssh-add ~/.ssh/deploy_key
+        echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa.pub
+        ssh-add ~/.ssh/id_rsa.pub
 
     - name: SSH into server and deploy Docker container
       uses: appleboy/ssh-action@master
