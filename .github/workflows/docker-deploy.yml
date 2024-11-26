@@ -44,7 +44,7 @@ jobs:
 
     - name: SSH into server and deploy Docker container
       run: |
-        ssh -o StrictHostKeyChecking=no ${SSH_USERNAME}@${SSH_HOST} << 'EOF
+        ssh -o StrictHostKeyChecking=no ${SERVER_USERNAME}@${SERVER_HOST} << 'EOF
           docker pull m0ln1z/my-fastapi-app:latest 
           docker stop my-fastapi-app || true  
           docker rm my-fastapi-app || true  
