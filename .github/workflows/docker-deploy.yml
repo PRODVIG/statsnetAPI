@@ -37,24 +37,27 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Set up SSH agent (for Deploy Key)
-      uses: webfactory/ssh-agent@v0.5.3
-      with:
-        ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}  # Используем ключ Deploy Key из Secrets
+    # Загрузка приватного ключа Deploy Key напрямую из файла
+    - name: Add Deploy Key to SSH Agent
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        ssh-add ~/.ssh/deploy_key
 
     - name: SSH into server and deploy Docker container
       uses: appleboy/ssh-action@master
       with:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USERNAME }}
-        password: ${{ secrets.SERVER_PASSWORD }}  # Используем пароль для SSH подключения
+        password: ${{ secrets.SERVER_PASSWORD }}
         script: |
-          # Печатаем отладочную информацию для проверки переменных
+          # Отладочная информация
           echo "SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}"
           echo "SERVER_HOST: ${{ secrets.SERVER_HOST }}"
-          
-          # Подключение и выполнение команд на сервере через SSH
-          docker pull m0ln1z/my-fastapi-app:latest  # Загружает последний образ
-          docker stop my-fastapi-app || true  # Останавливает контейнер, если он запущен
-          docker rm my-fastapi-app || true  # Удаляет старый контейнер
-          docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest  # Запуск контейнера
+
+          # Деплой
+          docker pull m0ln1z/my-fastapi-app:latest
+          docker stop my-fastapi-app || true
+          docker rm my-fastapi-app || true
+          docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest
