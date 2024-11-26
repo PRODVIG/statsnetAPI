@@ -6,55 +6,29 @@ on:
       - main
 
 jobs:
-  build:
-    runs-on: ubuntu-latest  
+  build-and-deploy:
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3  
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2 
+      uses: actions/checkout@v3  # Используем последнюю версию для checkout
 
     - name: Log in to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
     - name: Build and push Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: true
-        tags: m0ln1z/my-fastapi-app:latest  
+      run: |
+        docker build -t m0ln1z/my-fastapi-app:latest .
+        docker push m0ln1z/my-fastapi-app:latest
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build  
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
-
-    - name: Set up SSH agent
-      uses: webfactory/ssh-agent@v0.5.3
-      with:
-        ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}  # Используем SSH ключ из Secrets
-
-    - name: SSH into server and deploy Docker container
+    - name: SSH into server and deploy
       uses: appleboy/ssh-action@master
       with:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USERNAME }}
-        private_key: ${{ secrets.SERVER_SSH_KEY }}  # Указываем приватный ключ для подключения
+        private_key: ${{ secrets.SERVER_SSH_KEY }}  # Используем SSH ключ
         script: |
-          # Печатаем отладочную информацию для проверки переменных
-          echo "SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}"
-          echo "SERVER_HOST: ${{ secrets.SERVER_HOST }}"
-          
-          # Подключение и выполнение команд на сервере через SSH
-          docker pull m0ln1z/my-fastapi-app:latest  # Загружает последний образ
-          docker stop my-fastapi-app || true  # Останавливает контейнер, если он запущен
-          docker rm my-fastapi-app || true  # Удаляет старый контейнер
-          docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest  # Запуск контейнера
+          # Остановка и удаление старых контейнеров с использованием docker-compose
+          docker-compose -f /path/to/your/docker-compose.yml down
+          docker-compose -f /path/to/your/docker-compose.yml pull
+          docker-compose -f /path/to/your/docker-compose.yml up -d  # Запуск обновленного контейнера
