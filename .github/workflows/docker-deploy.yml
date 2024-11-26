@@ -47,6 +47,7 @@ jobs:
         # Убедитесь, что ключ доступен через ssh-agent
         eval $(ssh-agent -s)
         echo "${{ secrets.SERVER_SSH_KEY }}" | ssh-add -  # Добавляем ключ в агент
+        
         # Печатаем отладочную информацию для проверки переменных
         echo "SERVER_USERNAME: ${SERVER_USERNAME}"
         echo "SERVER_HOST: ${SERVER_HOST}"
