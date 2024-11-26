@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import cloudscraper
 import logging
+from typing import Optional  # Импортируем Optional
 
 # Инициализация приложения
 app = FastAPI(
@@ -43,8 +44,8 @@ def check_authentication():
 # Модель данных для компании
 class CompanyRequest(BaseModel):
     company_id: int
-    bin: str | None = None
-    phone: str | None = None
+    bin: Optional[str] = None  # Заменили str | None на Optional[str]
+    phone: Optional[str] = None  # Заменили str | None на Optional[str]
 
 # Обработчик запроса для обновления данных компании
 @app.post("/company", summary="Обновление данных компании", tags=["Bitrix24"])
