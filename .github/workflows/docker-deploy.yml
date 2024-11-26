@@ -49,11 +49,11 @@ jobs:
         echo "${{ secrets.SERVER_SSH_KEY }}" | ssh-add -  # Добавляем ключ в агент
         
         # Печатаем отладочную информацию для проверки переменных
-        echo "SERVER_USERNAME: ${SERVER_USERNAME}"
-        echo "SERVER_HOST: ${SERVER_HOST}"
+        echo "SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}"
+        echo "SERVER_HOST: ${{ secrets.SERVER_HOST }}"
         
         # Подключение по SSH и выполнение команд
-        ssh -o StrictHostKeyChecking=no ${SERVER_USERNAME}@${SERVER_HOST} << EOF
+        ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }} << EOF
         docker pull m0ln1z/my-fastapi-app:latest  # Загружает последний образ
         docker stop my-fastapi-app || true  # Останавливает контейнер, если он запущен
         docker rm my-fastapi-app || true  # Удаляет старый контейнер
