@@ -45,4 +45,4 @@ jobs:
           docker pull m0ln1z/my-fastapi-app:latest  # Загружаем обновлённый образ
           docker stop my-fastapi-app || true  # Останавливаем старый контейнер, если он работает
           docker rm my-fastapi-app || true  # Удаляем старый контейнер, если он существует
-          docker run -d --name my-fastapi-app -p 80:80 m0ln1z/my-fastapi-app:latest  # Запускаем новый контейнер
+          docker run -d --name my-fastapi-app -p 8000:8000 m0ln1z/my-fastapi-app:latest  # Запускаем новый контейнер
