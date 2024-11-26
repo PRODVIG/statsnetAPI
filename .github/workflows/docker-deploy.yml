@@ -20,7 +20,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # Логин в DockerHub (если нужно)
+      # Логин в Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v2
         with:
@@ -31,7 +31,28 @@ jobs:
       - name: Build Docker image
         run: docker build -t my-fastapi-app .
 
-      # Запуск Docker контейнера (можно настроить деплой в сервер)
-      - name: Run Docker container
+      # Публикация Docker образа в Docker Hub (если нужно)
+      - name: Push Docker image to Docker Hub
+        run: docker push my-fastapi-app
+
+      # Установка SSH ключа для доступа к серверу
+      - name: Set up SSH key
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+
+      # Деплой на сервер
+      - name: Deploy to server
         run: |
-          docker run -d -p 8000:8000 --name fastapi-app my-fastapi-app
+          # Подключаемся к серверу через SSH и перезапускаем контейнер
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            # Останавливаем и удаляем старый контейнер (если существует)
+            docker stop fastapi-app || true
+            docker rm fastapi-app || true
+
+            # Загружаем последний образ из Docker Hub
+            docker pull my-fastapi-app
+
+            # Запускаем новый контейнер
+            docker run -d -p 8000:8000 --name fastapi-app my-fastapi-app
+          EOF
