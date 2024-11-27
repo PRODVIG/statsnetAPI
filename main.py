@@ -52,7 +52,7 @@ async def handle_company(data: CompanyRequest):
 
     # Запрос к Statsnet с использованием SDK
     try:
-        companies = client.search(query=query_param, jurisdiction="kz", limit=1)
+        companies = client.search(query=query_param, limit=1)
         if companies and "data" in companies and companies["data"]:
             company_info = companies["data"][0]
         else:
