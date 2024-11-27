@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from statsnet_python_sdk import Client  # Correct import for statsnet SDK
+from statsnet_python_sdk import Client  # Импорт SDK Statsnet
 import requests
 import logging
 
@@ -14,7 +14,7 @@ app = FastAPI(
 
 # Константы
 BITRIX_WEBHOOK_URL = "https://prodvig.bitrix24.kz/rest/1/ts9pegm640jua38a/"
-STATSNET_API_KEY = "<y6440652f3245493044502e2375755a4c772a642eb685beec7674ddeac9fb251896e4030757ccec9f>"
+STATSNET_API_KEY = "<y6440652f3245493044502e2375755a4c772a642eb685beec7674ddeac9fb251896e4030757ccec9f>"  # Убедитесь, что ключ действителен
 
 # Логирование
 logging.basicConfig(filename="logFile.txt", level=logging.INFO, format="%(asctime)s - %(message)s")
@@ -22,8 +22,8 @@ logging.basicConfig(filename="logFile.txt", level=logging.INFO, format="%(asctim
 # Модель данных
 class CompanyRequest(BaseModel):
     company_id: int
-    bin: Optional[str] = None
-    phone: Optional[str] = None
+    bin: Optional[str] = None  # БИН компании
+    phone: Optional[str] = None  # Телефон компании (опционально)
 
 # Инициализация клиента Statsnet
 client = Client(STATSNET_API_KEY)
@@ -40,61 +40,69 @@ async def handle_company(data: CompanyRequest):
     """
     company_id = data.company_id
 
-    # Проверка входных данных
+    # Проверка, что хотя бы одно поле поиска передано
     if not data.bin and not data.phone:
         raise HTTPException(status_code=400, detail="Either 'bin' or 'phone' must be provided.")
 
-    query_param = data.bin if data.bin else data.phone
-    search_field = "bin" if data.bin else "phone"
+    # Определяем параметр поиска
+    if data.bin:
+        logging.info(f"Поиск компании по БИН: {data.bin}")
+        try:
+            # Явный поиск по идентификатору (БИН)
+            company = client.get_company_by_identifier(data.bin)
+        except Exception as e:
+            logging.error(f"Ошибка поиска по БИН: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Statsnet API error: {str(e)}")
+    else:
+        logging.info(f"Поиск компании по телефону: {data.phone}")
+        try:
+            # Общий поиск по телефону через query
+            companies = client.search(query=data.phone, jurisdiction="kz", limit=1)
+            if not companies or not companies.get("data"):
+                raise HTTPException(status_code=404, detail="Компания не найдена.")
+            company = companies["data"][0]
+        except Exception as e:
+            logging.error(f"Ошибка поиска компании: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Statsnet API error: {str(e)}")
 
-    # Логирование запроса к Statsnet
-    logging.info(f"Fetching company data from Statsnet: {search_field}={query_param}")
+    # Проверяем полученные данные
+    if not company:
+        logging.info("Компания не найдена.")
+        raise HTTPException(status_code=404, detail="Компания не найдена.")
 
-    # Запрос к Statsnet с использованием SDK
-    try:
-        companies = client.search(query=query_param, jurisdiction="kz", limit=5)
-    except Exception as e:
-        logging.error(f"Error calling Statsnet API: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Statsnet API error: {str(e)}")
-
-    # Проверка, есть ли данные
-    if not companies or 'data' not in companies or not isinstance(companies['data'], list):
-        logging.info(f"No data found in Statsnet response: {companies}")
-        raise HTTPException(status_code=404, detail="Company not found in Statsnet API.")
-
-    # Извлечение данных компании
-    company_info = companies["data"][0]
-    short_name = company_info.get("short_name", "N/A")
-    full_name = company_info.get("full_name", "N/A")
-    taxes = company_info.get("taxes", [])
-
+    # Извлекаем данные
+    short_name = company.get("short_name", "N/A")
+    full_name = company.get("full_name", "N/A")
+    taxes = company.get("taxes", [])
     total_taxes = sum(t.get("amount", 0) for t in taxes)
     tax_2022 = next((t["amount"] for t in taxes if t["year"] == 2022), 0)
 
-    # Логирование данных компании
-    logging.info(f"Company data: short_name={short_name}, full_name={full_name}, total_taxes={total_taxes}, tax_2022={tax_2022}")
+    # Логируем данные компании
+    logging.info(f"Данные компании: short_name={short_name}, full_name={full_name}, total_taxes={total_taxes}, tax_2022={tax_2022}")
 
     # Обновление данных в Bitrix24
-    bitrix_response = requests.post(
-        f"{BITRIX_WEBHOOK_URL}crm.company.update",
-        json={
-            "id": company_id,
-            "fields": {
-                "UF_CRM_SHORT_NAME": short_name,
-                "UF_CRM_FULL_NAME": full_name,
-                "UF_CRM_TAX_2022": tax_2022,
-                "UF_CRM_TOTAL_TAXES": total_taxes,
-                "UF_CRM_STATSNET_URL": f"https://statsnet.co/companies/kz/{query_param}",
+    try:
+        bitrix_response = requests.post(
+            f"{BITRIX_WEBHOOK_URL}crm.company.update",
+            json={
+                "id": company_id,
+                "fields": {
+                    "UF_CRM_SHORT_NAME": short_name,
+                    "UF_CRM_FULL_NAME": full_name,
+                    "UF_CRM_TAX_2022": tax_2022,
+                    "UF_CRM_TOTAL_TAXES": total_taxes,
+                    "UF_CRM_STATSNET_URL": f"https://statsnet.co/companies/kz/{data.bin}",
+                },
             },
-        },
-    )
+        )
 
-    # Проверка ответа от Bitrix24
-    if bitrix_response.status_code != 200 or not bitrix_response.json().get("result"):
-        logging.error(f"Bitrix24 API error: {bitrix_response.text}")
+        if bitrix_response.status_code != 200 or not bitrix_response.json().get("result"):
+            raise Exception(f"Ошибка Bitrix24 API: {bitrix_response.text}")
+    except Exception as e:
+        logging.error(f"Ошибка при обновлении в Bitrix24: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to update data in Bitrix24.")
 
-    # Успешный ответ
+    # Возвращаем успешный ответ
     return {
         "status": "success",
         "short_name": short_name,
