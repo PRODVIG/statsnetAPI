@@ -1,123 +1,138 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Query
 import requests
+import os
 import logging
 import json
+from typing import Optional
 
 # Настройка логирования
-logging.basicConfig(filename="logFile.txt", level=logging.INFO, format="%(asctime)s - %(message)s")
-
-# Инициализация FastAPI
-app = FastAPI(
-    title="Bitrix24 & Statsnet Integration",
-    description="API для интеграции данных между Statsnet и Bitrix24",
-    version="1.0.1",
-)
+LOG_FILE = os.path.join(os.path.dirname(__file__), 'logFile.txt')
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Константы
-BITRIX_WEBHOOK_URL = "https://prodvig.bitrix24.kz/rest/1/ts9pegm640jua38a/"
-STATSNET_API_URL = "https://statsnet.co/search/kz/"
+B24_WEBHOOK_URL = 'https://prodvig.bitrix24.kz/rest/1/ts9pegm640jua38a/'
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0',
+    'Content-Type': 'application/json'
+}
 
-# Параметры для Bitrix24
-statsnet_url_link_field = "UF_CRM_1679854080"
-statsnet_tax_total_field = "UF_CRM_1679854136"
-statsnet_tax_2022_field = "UF_CRM_1679854188"
-statsnet_tax_total_money_field = "UF_CRM_1680100714"
-statsnet_tax_2022_money_field = "UF_CRM_1680100777"
-statsnet_shortName_field = "UF_CRM_1681246853"
-statsnet_fullName_field = "UF_CRM_1681246872"
+# FastAPI приложение
+app = FastAPI(title="Bitrix24 + StatsNet API", version="1.0")
 
-# Модели данных
-class CompanyRequest(BaseModel):
-    company_id: int
-    bin: str
+# Методы для взаимодействия с Bitrix24 API
+class Bitrix24Api2:
+    def __init__(self, webhook_url, log_file):
+        self.webhook_url = webhook_url
+        self.log_file = log_file
 
-# Функция для выполнения CURL-запроса
-def curl_request(url: str):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0',
-    }
-    try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+    def company_get(self, company_id):
+        url = f"{self.webhook_url}crm.company.get"
+        response = requests.post(url, headers=HEADERS, json={'id': company_id})
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logging.error(f"Ошибка получения компании: {response.text}")
+            return None
+
+    def company_update(self, company_id, fields):
+        url = f"{self.webhook_url}crm.company.update"
+        response = requests.post(url, headers=HEADERS, json={'id': company_id, 'fields': fields})
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logging.error(f"Ошибка обновления компании: {response.text}")
+            return None
+
+    def send_comment(self, company_id, comment, entity_type):
+        url = f"{self.webhook_url}crm.timeline.comment.add"
+        response = requests.post(url, headers=HEADERS, json={
+            'fields': {
+                'ENTITY_ID': company_id,
+                'ENTITY_TYPE': entity_type,
+                'COMMENT': comment
+            }
+        })
+        if response.status_code != 200:
+            logging.error(f"Ошибка отправки комментария: {response.text}")
+
+# Методы для взаимодействия с StatsNet
+def fetch_statsnet_data(bin_code):
+    bin_code = ''.join(filter(str.isdigit, bin_code))
+    search_url = f"https://statsnet.co/search/kz/{bin_code}"
+    response = requests.get(search_url, headers=HEADERS, timeout=15)
+    if response.status_code == 200:
         return response.text
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error during HTTP request: {e}")
+    else:
+        logging.error(f"Ошибка запроса к StatsNet: {response.text}")
         return None
 
-# Главный обработчик API
-@app.post("/company")
-async def update_company(data: CompanyRequest):
-    company_id = data.company_id
-    bin_code = data.bin
+def parse_statsnet_data(response):
+    try:
+        start_index = response.find('__NEXT_DATA__" type="application/json">') + len('__NEXT_DATA__" type="application/json">')
+        end_index = response.find('</script>', start_index)
+        data_json = response[start_index:end_index]
+        return json.loads(data_json)
+    except Exception as e:
+        logging.error(f"Ошибка парсинга данных: {e}")
+        return None
 
-    if not bin_code:
-        raise HTTPException(status_code=400, detail="BIN must be provided.")
+# Основной обработчик
+def process_company_data(company_id: int, bin_code: str):
+    b24 = Bitrix24Api2(B24_WEBHOOK_URL, LOG_FILE)
+    company_data = b24.company_get(company_id)
 
-    statsnet_url_link = f"{STATSNET_API_URL}{bin_code}"
+    if not company_data:
+        raise HTTPException(status_code=404, detail="Компания не найдена в Bitrix24")
 
-    logging.info(f"Requesting Statsnet data for BIN: {bin_code}")
+    statsnet_data = fetch_statsnet_data(bin_code)
+    if not statsnet_data:
+        raise HTTPException(status_code=500, detail="Ошибка при запросе к StatsNet")
 
-    req = curl_request(statsnet_url_link)
+    parsed_data = parse_statsnet_data(statsnet_data)
+    if not parsed_data:
+        raise HTTPException(status_code=500, detail="Ошибка обработки данных StatsNet")
 
-    if req:
-        try:
-            # Пытаемся извлечь данные из JSON-ответа
-            match = re.search(r'__NEXT_DATA__" type="application/json">(.*?)<', req)
-            if match:
-                json_result = json.loads(match.group(1))
-                company_data = json_result["props"]["pageProps"]["company"]["company"]
+    try:
+        statsnet_id = parsed_data['props']['pageProps']['companies'][0]['id']
+        details_url = f"https://statsnet.co/companies/kz/{statsnet_id}"
+        logging.info(f"StatsNet URL: {details_url}")
 
-                # Извлечение необходимых данных
-                statsnet_shortName = company_data["title"]
-                statsnet_fullName = company_data["name"]
-                financials = company_data["financials"]
+        short_name = parsed_data['props']['pageProps']['company']['company']['title']
+        full_name = parsed_data['props']['pageProps']['company']['company']['name']
 
-                statsnet_tax_2022 = 0
-                statsnet_tax_total = 0
+        financials = parsed_data['props']['pageProps']['company']['company']['financials']
+        tax_2022 = sum(f['taxes'] for f in financials if f['year'] == 2022)
+        total_taxes = sum(f['taxes'] for f in financials)
 
-                # Обработка финансовых данных
-                for tax in financials:
-                    if tax["year"] == 2022:
-                        statsnet_tax_2022 = tax["taxes"]
-                    statsnet_tax_total += tax["taxes"]
+        fields = {
+            "UF_CRM_1679854080": details_url,
+            "UF_CRM_1679854136": total_taxes,
+            "UF_CRM_1679854188": tax_2022,
+            "UF_CRM_1681246853": short_name,
+            "UF_CRM_1681246872": full_name,
+        }
 
-                # Подготовка данных для обновления Bitrix24
-                fields = {
-                    statsnet_url_link_field: statsnet_url_link,
-                    statsnet_tax_total_field: statsnet_tax_total,
-                    statsnet_tax_2022_field: statsnet_tax_2022,
-                    statsnet_tax_total_money_field: statsnet_tax_total,
-                    statsnet_tax_2022_money_field: statsnet_tax_2022,
-                    statsnet_shortName_field: statsnet_shortName,
-                    statsnet_fullName_field: statsnet_fullName,
-                }
+        update_result = b24.company_update(company_id, fields)
+        if update_result and update_result.get('result'):
+            comment = f"Данные из StatsNet:\n- Taxes 2022: {tax_2022}\n- Total Taxes: {total_taxes}"
+            b24.send_comment(company_id, comment, 'company')
 
-                # Обновление компании в Bitrix24
-                bitrix_response = requests.post(
-                    f"{BITRIX_WEBHOOK_URL}crm.company.update",
-                    json={
-                        "id": company_id,
-                        "fields": fields
-                    },
-                )
+            logging.info(f"Успешно обновлены данные компании {company_id}")
+            return {"status": "success", "message": "Данные успешно обновлены", "fields": fields}
+        else:
+            raise HTTPException(status_code=500, detail="Ошибка обновления компании в Bitrix24")
+    except Exception as e:
+        logging.error(f"Ошибка обработки данных: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка обработки данных StatsNet")
 
-                if bitrix_response.status_code == 200 and bitrix_response.json().get("result"):
-                    logging.info(f"Company data successfully updated in Bitrix24.")
-                    return {"status": "success", "message": "Company data updated in Bitrix24"}
+# Эндпоинты FastAPI
+@app.get("/")
+def read_root():
+    return {"message": "Добро пожаловать в API интеграции Bitrix24 и StatsNet"}
 
-                else:
-                    logging.error(f"Failed to update company in Bitrix24: {bitrix_response.text}")
-                    raise HTTPException(status_code=500, detail="Failed to update company in Bitrix24.")
-
-            else:
-                logging.error("Failed to extract company data from Statsnet.")
-                raise HTTPException(status_code=500, detail="Failed to extract company data from Statsnet.")
-
-        except Exception as e:
-            logging.error(f"Error processing Statsnet data: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error processing Statsnet data: {str(e)}")
-    else:
-        logging.error(f"Failed to get data from Statsnet for BIN: {bin_code}")
-        raise HTTPException(status_code=500, detail="Failed to get data from Statsnet.")
-
+@app.post("/update_company")
+def update_company(
+    company_id: int = Query(..., description="ID компании в Bitrix24"),
+    bin_code: str = Query(..., description="BIN компании")
+):
+    return process_company_data(company_id, bin_code)
