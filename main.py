@@ -10,11 +10,17 @@ LOG_FILE = os.path.join(os.path.dirname(__file__), 'logFile.txt')
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Константы
-B24_WEBHOOK_URL = 'https://prodvig.bitrix24.kz/rest/1/ts9pegm640jua38a/'
+B24_WEBHOOK_URL = ''
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0',
-    'Content-Type': 'application/json'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Cache-Control': 'max-age=0'
 }
+
 
 # FastAPI приложение
 app = FastAPI(title="Bitrix24 + StatsNet API", version="1.0")
@@ -59,11 +65,16 @@ class Bitrix24Api2:
 def fetch_statsnet_data(bin_code):
     bin_code = ''.join(filter(str.isdigit, bin_code))
     search_url = f"https://statsnet.co/search/kz/{bin_code}"
-    response = requests.get(search_url, headers=HEADERS, timeout=15)
-    if response.status_code == 200:
-        return response.text
-    else:
-        logging.error(f"Ошибка запроса к StatsNet: {response.text}")
+    
+    try:
+        response = requests.get(search_url, headers=HEADERS, timeout=15)
+        if response.status_code == 200:
+            return response.text
+        else:
+            logging.error(f"Ошибка запроса к StatsNet: {response.text}")
+            return None
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Ошибка подключения к StatsNet: {e}")
         return None
 
 def parse_statsnet_data(response):
