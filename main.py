@@ -19,7 +19,7 @@ def log_message(message: str):
         f.write(message + "\n")
 
 
-async def fetch_with_playwright(url: str, max_attempts: int = 10, interval: int = 30) -> str:
+async def fetch_with_playwright(url: str, max_attempts: int = 20, interval: int = 30) -> str:
     """
     Запрос через Playwright для обхода Cloudflare с проверкой успешности загрузки.
     
@@ -42,14 +42,19 @@ async def fetch_with_playwright(url: str, max_attempts: int = 10, interval: int 
                     # Ждем загрузки страницы
                     await page.wait_for_load_state("networkidle")
 
+                    # Извлекаем содержимое страницы
+                    content = await page.content()
+
+                    # Логируем весь HTML на каждой попытке
+                    log_message(f"Попытка {attempt + 1}: HTML-ответ:\n{content}")
+
                     # Проверяем наличие ключевых данных
-                    if "__NEXT_DATA__" in await page.content():
+                    if "__NEXT_DATA__" in content:
                         log_message(f"Playwright: Успешно загружен URL {url} на попытке {attempt + 1}")
-                        content = await page.content()
                         await browser.close()
                         return content
 
-                    # Логируем промежуточный статус
+                    # Логируем, если данные не найдены
                     log_message(f"Попытка {attempt + 1}: Данные пока не загружены.")
                 except Exception as e:
                     log_message(f"Попытка {attempt + 1}: Ошибка загрузки - {str(e)}")
