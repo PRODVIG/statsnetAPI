@@ -1,149 +1,132 @@
 from fastapi import FastAPI, HTTPException, Query
-import requests
-import os
-import logging
+import httpx
 import json
-from typing import Optional
 
-# Настройка логирования
-LOG_FILE = os.path.join(os.path.dirname(__file__), 'logFile.txt')
-logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Конфигурация Bitrix24
+BITRIX_WEBHOOK_URL = "https://prodvig.bitrix24.kz/rest/1/ts9pegm640jua38a/"
 
-# Константы
-B24_WEBHOOK_URL = ''
+# Создаем приложение FastAPI
+app = FastAPI()
+
+# Заголовки для имитации браузера
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Cache-Control': 'max-age=0'
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Connection": "keep-alive",
 }
 
+# Лог-файл
+LOG_FILE = "logFile.txt"
 
-# FastAPI приложение
-app = FastAPI(title="Bitrix24 + StatsNet API", version="1.0")
+def log_message(message: str):
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(message + "\n")
 
-# Методы для взаимодействия с Bitrix24 API
-class Bitrix24Api2:
-    def __init__(self, webhook_url, log_file):
-        self.webhook_url = webhook_url
-        self.log_file = log_file
 
-    def company_get(self, company_id):
-        url = f"{self.webhook_url}crm.company.get"
-        response = requests.post(url, headers=HEADERS, json={'id': company_id})
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logging.error(f"Ошибка получения компании: {response.text}")
-            return None
+@app.post("/process_company/")
+async def process_company(company_id: int = Query(...), bin_number: str = Query(...)):
+    """
+    Обработка компании: получение данных по BIN и обновление в Bitrix24.
+    """
+    try:
+        # URL для поиска по BIN
+        search_url = f"https://statsnet.co/search/kz/{bin_number}"
+        
+        # 1. Запрос к statsnet.co
+        async with httpx.AsyncClient(headers=HEADERS, timeout=15) as client:
+            response = await client.get(search_url)
 
-    def company_update(self, company_id, fields):
-        url = f"{self.webhook_url}crm.company.update"
-        response = requests.post(url, headers=HEADERS, json={'id': company_id, 'fields': fields})
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logging.error(f"Ошибка обновления компании: {response.text}")
-            return None
-
-    def send_comment(self, company_id, comment, entity_type):
-        url = f"{self.webhook_url}crm.timeline.comment.add"
-        response = requests.post(url, headers=HEADERS, json={
-            'fields': {
-                'ENTITY_ID': company_id,
-                'ENTITY_TYPE': entity_type,
-                'COMMENT': comment
-            }
-        })
         if response.status_code != 200:
-            logging.error(f"Ошибка отправки комментария: {response.text}")
+            raise HTTPException(status_code=500, detail=f"Ошибка получения данных: {response.status_code}")
 
-# Методы для взаимодействия с StatsNet
-def fetch_statsnet_data(bin_code):
-    bin_code = ''.join(filter(str.isdigit, bin_code))
-    search_url = f"https://statsnet.co/search/kz/{bin_code}"
-    
-    try:
-        response = requests.get(search_url, headers=HEADERS, timeout=15)
-        if response.status_code == 200:
-            return response.text
-        else:
-            logging.error(f"Ошибка запроса к StatsNet: {response.text}")
-            return None
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Ошибка подключения к StatsNet: {e}")
-        return None
+        # Логирование ответа
+        log_message(f"Ответ от statsnet.co (поиск): {response.text}")
 
-def parse_statsnet_data(response):
-    try:
-        start_index = response.find('__NEXT_DATA__" type="application/json">') + len('__NEXT_DATA__" type="application/json">')
-        end_index = response.find('</script>', start_index)
-        data_json = response[start_index:end_index]
-        return json.loads(data_json)
-    except Exception as e:
-        logging.error(f"Ошибка парсинга данных: {e}")
-        return None
+        # Извлечение JSON из ответа
+        matches = response.text.find("__NEXT_DATA__")
+        if matches == -1:
+            raise HTTPException(status_code=400, detail="Данные не найдены в ответе.")
 
-# Основной обработчик
-def process_company_data(company_id: int, bin_code: str):
-    b24 = Bitrix24Api2(B24_WEBHOOK_URL, LOG_FILE)
-    company_data = b24.company_get(company_id)
+        # Извлекаем и декодируем JSON
+        json_data_start = response.text.find(">", matches) + 1
+        json_data_end = response.text.find("</script>", json_data_start)
+        raw_json = response.text[json_data_start:json_data_end]
+        json_result = json.loads(raw_json)
 
-    if not company_data:
-        raise HTTPException(status_code=404, detail="Компания не найдена в Bitrix24")
+        # 2. Проверяем наличие компании
+        companies = json_result.get("props", {}).get("pageProps", {}).get("companies", [])
+        if not companies:
+            raise HTTPException(status_code=400, detail="Компания с указанным BIN не найдена.")
 
-    statsnet_data = fetch_statsnet_data(bin_code)
-    if not statsnet_data:
-        raise HTTPException(status_code=500, detail="Ошибка при запросе к StatsNet")
+        # Получаем ID компании
+        company_data = companies[0]
+        statsnet_id = company_data.get("id")
+        if not statsnet_id:
+            raise HTTPException(status_code=400, detail="Не удалось получить ID компании.")
 
-    parsed_data = parse_statsnet_data(statsnet_data)
-    if not parsed_data:
-        raise HTTPException(status_code=500, detail="Ошибка обработки данных StatsNet")
-
-    try:
-        statsnet_id = parsed_data['props']['pageProps']['companies'][0]['id']
+        # 3. Запрос детальной информации
         details_url = f"https://statsnet.co/companies/kz/{statsnet_id}"
-        logging.info(f"StatsNet URL: {details_url}")
+        async with httpx.AsyncClient(headers=HEADERS, timeout=15) as client:
+            details_response = await client.get(details_url)
 
-        short_name = parsed_data['props']['pageProps']['company']['company']['title']
-        full_name = parsed_data['props']['pageProps']['company']['company']['name']
+        if details_response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Ошибка получения деталей компании: {details_response.status_code}")
 
-        financials = parsed_data['props']['pageProps']['company']['company']['financials']
-        tax_2022 = sum(f['taxes'] for f in financials if f['year'] == 2022)
-        total_taxes = sum(f['taxes'] for f in financials)
+        # Логирование ответа
+        log_message(f"Ответ от statsnet.co (детали): {details_response.text}")
 
+        # Извлечение JSON из ответа
+        matches = details_response.text.find("__NEXT_DATA__")
+        if matches == -1:
+            raise HTTPException(status_code=400, detail="Детали компании не найдены в ответе.")
+
+        # Извлекаем и декодируем JSON
+        json_data_start = details_response.text.find(">", matches) + 1
+        json_data_end = details_response.text.find("</script>", json_data_start)
+        raw_json = details_response.text[json_data_start:json_data_end]
+        details_json = json.loads(raw_json)
+
+        company_details = details_json.get("props", {}).get("pageProps", {}).get("company", {}).get("company", {})
+        if not company_details:
+            raise HTTPException(status_code=400, detail="Не удалось извлечь детали компании.")
+
+        # 4. Извлечение нужных данных
+        statsnet_shortName = company_details.get("title", "")
+        statsnet_fullName = company_details.get("name", "")
+        financials = company_details.get("financials", [])
+
+        statsnet_tax_total = sum(tax.get("taxes", 0) for tax in financials)
+        statsnet_tax_2022 = sum(tax.get("taxes", 0) for tax in financials if tax.get("year") == 2022)
+
+        # Логируем данные
+        log_message(f"Детали компании: {company_details}")
+
+        # 5. Формируем данные для Bitrix24
         fields = {
-            "UF_CRM_1679854080": details_url,
-            "UF_CRM_1679854136": total_taxes,
-            "UF_CRM_1679854188": tax_2022,
-            "UF_CRM_1681246853": short_name,
-            "UF_CRM_1681246872": full_name,
+            "fields": {
+                "UF_CRM_1679854080": search_url,
+                "UF_CRM_1679854136": statsnet_tax_total,
+                "UF_CRM_1679854188": statsnet_tax_2022,
+                "UF_CRM_1680100714": statsnet_tax_total,
+                "UF_CRM_1680100777": statsnet_tax_2022,
+                "UF_CRM_1681246853": statsnet_shortName,
+                "UF_CRM_1681246872": statsnet_fullName,
+            }
         }
 
-        update_result = b24.company_update(company_id, fields)
-        if update_result and update_result.get('result'):
-            comment = f"Данные из StatsNet:\n- Taxes 2022: {tax_2022}\n- Total Taxes: {total_taxes}"
-            b24.send_comment(company_id, comment, 'company')
+        # 6. Обновление компании в Bitrix24
+        bitrix_url = f"{BITRIX_WEBHOOK_URL}crm.company.update?ID={company_id}"
+        async with httpx.AsyncClient(headers=HEADERS, timeout=15) as client:
+            bitrix_response = await client.post(bitrix_url, json=fields)
 
-            logging.info(f"Успешно обновлены данные компании {company_id}")
-            return {"status": "success", "message": "Данные успешно обновлены", "fields": fields}
-        else:
-            raise HTTPException(status_code=500, detail="Ошибка обновления компании в Bitrix24")
+        if bitrix_response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Ошибка обновления данных в Bitrix24: {bitrix_response.status_code}")
+
+        log_message(f"Обновление в Bitrix24: {bitrix_response.text}")
+
+        return {"status": "success", "message": "Данные компании успешно обновлены."}
+
     except Exception as e:
-        logging.error(f"Ошибка обработки данных: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка обработки данных StatsNet")
-
-# Эндпоинты FastAPI
-@app.get("/")
-def read_root():
-    return {"message": "Добро пожаловать в API интеграции Bitrix24 и StatsNet"}
-
-@app.post("/update_company")
-def update_company(
-    company_id: int = Query(..., description="ID компании в Bitrix24"),
-    bin_code: str = Query(..., description="BIN компании")
-):
-    return process_company_data(company_id, bin_code)
+        log_message(f"Ошибка: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
