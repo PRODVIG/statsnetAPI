@@ -14,13 +14,19 @@ app = FastAPI()
 LOG_FILE = "logFile.txt"
 
 def log_message(message: str):
+    """Логирование сообщений в файл."""
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(message + "\n")
 
 
-async def fetch_with_playwright(url: str) -> str:
+async def fetch_with_playwright(url: str, max_attempts: int = 10, interval: int = 30) -> str:
     """
-    Запрос через Playwright для обхода Cloudflare.
+    Запрос через Playwright для обхода Cloudflare с проверкой успешности загрузки.
+    
+    :param url: URL для загрузки.
+    :param max_attempts: Максимальное количество попыток.
+    :param interval: Интервал между попытками в секундах.
+    :return: HTML содержимое страницы.
     """
     try:
         async with async_playwright() as p:
@@ -28,21 +34,32 @@ async def fetch_with_playwright(url: str) -> str:
             context = await browser.new_context()
             page = await context.new_page()
 
-            # Открываем URL
-            await page.goto(url, timeout=60000)
+            for attempt in range(max_attempts):
+                try:
+                    # Открываем URL
+                    await page.goto(url, timeout=60000)
 
-            # Ждем, пока страница полностью загрузится
-            await page.wait_for_load_state("networkidle")
+                    # Ждем загрузки страницы
+                    await page.wait_for_load_state("networkidle")
 
-            # Извлекаем HTML содержимое страницы
-            content = await page.content()
+                    # Проверяем наличие ключевых данных
+                    if "__NEXT_DATA__" in await page.content():
+                        log_message(f"Playwright: Успешно загружен URL {url} на попытке {attempt + 1}")
+                        content = await page.content()
+                        await browser.close()
+                        return content
 
-            # Закрываем браузер
+                    # Логируем промежуточный статус
+                    log_message(f"Попытка {attempt + 1}: Данные пока не загружены.")
+                except Exception as e:
+                    log_message(f"Попытка {attempt + 1}: Ошибка загрузки - {str(e)}")
+
+                # Ждем перед следующей попыткой
+                await asyncio.sleep(interval)
+
+            # Закрываем браузер после всех попыток
             await browser.close()
-
-            # Логирование
-            log_message(f"Playwright: Успешно загружен URL {url}")
-            return content
+            raise HTTPException(status_code=408, detail="Данные не загрузились за отведенное время.")
     except Exception as e:
         log_message(f"Playwright Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Playwright Error: {str(e)}")
@@ -57,7 +74,7 @@ async def process_company(company_id: int = Query(...), bin_number: str = Query(
         # URL для поиска по BIN
         search_url = f"https://statsnet.co/search/kz/{bin_number}"
 
-        # 1. Запрос к statsnet.co через Playwright
+        # 1. Запрос к statsnet.co через Playwright с проверкой успешности
         response = await fetch_with_playwright(search_url)
 
         # Логирование ответа
