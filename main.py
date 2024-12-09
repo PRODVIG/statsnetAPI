@@ -1,170 +1,111 @@
 from fastapi import FastAPI, HTTPException, Query
 import httpx
+import time
 import json
-import asyncio
-from playwright.async_api import async_playwright
+from typing import Optional
 
-# Конфигурация Bitrix24
-BITRIX_WEBHOOK_URL = "https://prodvig.bitrix24.kz/rest/1/ts9pegm640jua38a/"
-
-# Создаем приложение FastAPI
 app = FastAPI()
 
-# Лог-файл
-LOG_FILE = "logFile.txt"
+B24_WEBHOOK_URL = 'https://prodvig.bitrix24.kz/rest/1/ts9pegm640jua38a/'
+COOKIE_FILE = './cookies.txt'
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1"
+}
+
+LOG_FILE = './logFile.txt'
+
 
 def log_message(message: str):
-    """Логирование сообщений в файл."""
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(message + "\n")
+    """Записываем сообщение в лог-файл."""
+    with open(LOG_FILE, 'a', encoding='utf-8') as log:
+        log.write(f"{message}\n")
 
 
-async def fetch_with_playwright(url: str, max_attempts: int = 20, interval: int = 30) -> str:
-    """
-    Запрос через Playwright для обхода Cloudflare с проверкой успешности загрузки.
-    
-    :param url: URL для загрузки.
-    :param max_attempts: Максимальное количество попыток.
-    :param interval: Интервал между попытками в секундах.
-    :return: HTML содержимое страницы.
-    """
+async def fetch_with_retries(url: str, retries: int = 3, delay: int = 30) -> str:
+    """Выполняем HTTP-запрос с повторными попытками."""
+    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
+        for attempt in range(retries):
+            try:
+                response = await client.get(url)
+                if response.status_code == 503 and attempt < retries - 1:
+                    time.sleep(delay)
+                else:
+                    response.raise_for_status()
+                    return response.text
+            except httpx.HTTPStatusError as e:
+                if attempt == retries - 1:
+                    log_message(f"Ошибка HTTP-запроса: {e}")
+                    raise HTTPException(status_code=503, detail=f"Не удалось получить данные из {url}.")
+    return ""
+
+
+async def update_bitrix(company_id: str, fields: dict):
+    """Обновляем данные в Битрикс."""
+    url = f"{B24_WEBHOOK_URL}crm.company.update"
+    payload = {
+        "id": company_id,
+        "fields": fields
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+@app.get("/update_company/")
+async def update_company(company_id: str, bin: str):
+    """Основная функция для обновления данных компании."""
+    log_message(f"Запрос обновления для компании ID: {company_id}, BIN: {bin}")
+
+    # URL для поиска компании по BIN
+    search_url = f"https://statsnet.co/search/kz/{bin}"
+    search_response = await fetch_with_retries(search_url)
+
+    # Парсинг ответа для получения ID Statsnet
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
-            page = await context.new_page()
+        search_json = json.loads(search_response.split('__NEXT_DATA__" type="application/json">')[1].split("</script>")[0])
+        statsnet_id = search_json["props"]["pageProps"]["companies"][0]["id"]
+    except (IndexError, KeyError, json.JSONDecodeError):
+        raise HTTPException(status_code=404, detail="Не удалось получить данные компании по BIN.")
 
-            for attempt in range(max_attempts):
-                try:
-                    # Открываем URL
-                    await page.goto(url, timeout=60000)
+    # URL для детальной информации о компании
+    detail_url = f"https://statsnet.co/companies/kz/{statsnet_id}"
+    detail_response = await fetch_with_retries(detail_url)
 
-                    # Ждем загрузки страницы
-                    await page.wait_for_load_state("networkidle")
-
-                    # Извлекаем содержимое страницы
-                    content = await page.content()
-
-                    # Логируем весь HTML на каждой попытке
-                    log_message(f"Попытка {attempt + 1}: HTML-ответ:\n{content}")
-
-                    # Проверяем наличие ключевых данных
-                    if "__NEXT_DATA__" in content:
-                        log_message(f"Playwright: Успешно загружен URL {url} на попытке {attempt + 1}")
-                        await browser.close()
-                        return content
-
-                    # Логируем, если данные не найдены
-                    log_message(f"Попытка {attempt + 1}: Данные пока не загружены.")
-                except Exception as e:
-                    log_message(f"Попытка {attempt + 1}: Ошибка загрузки - {str(e)}")
-
-                # Ждем перед следующей попыткой
-                await asyncio.sleep(interval)
-
-            # Закрываем браузер после всех попыток
-            await browser.close()
-            raise HTTPException(status_code=408, detail="Данные не загрузились за отведенное время.")
-    except Exception as e:
-        log_message(f"Playwright Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Playwright Error: {str(e)}")
-
-
-@app.post("/process_company/")
-async def process_company(company_id: int = Query(...), bin_number: str = Query(...)):
-    """
-    Обработка компании: получение данных по BIN и обновление в Bitrix24.
-    """
+    # Парсинг детальной информации
     try:
-        # URL для поиска по BIN
-        search_url = f"https://statsnet.co/search/kz/{bin_number}"
+        detail_json = json.loads(detail_response.split('__NEXT_DATA__" type="application/json">')[1].split("</script>")[0])
+        company_data = detail_json["props"]["pageProps"]["company"]["company"]
+        statsnet_shortName = company_data.get("title", "")
+        statsnet_fullName = company_data.get("name", "")
+        financials = company_data.get("financials", [])
 
-        # 1. Запрос к statsnet.co через Playwright с проверкой успешности
-        response = await fetch_with_playwright(search_url)
+        # Расчёт налогов
+        statsnet_tax_2022 = sum(tax["taxes"] for tax in financials if tax.get("year") == 2022)
+        statsnet_tax_total = sum(tax["taxes"] for tax in financials)
+    except (IndexError, KeyError, json.JSONDecodeError):
+        raise HTTPException(status_code=500, detail="Ошибка парсинга деталей компании.")
 
-        # Логирование ответа
-        log_message(f"Ответ от statsnet.co (поиск): {response}")
+    # Логирование полученных данных
+    log_message(f"Детали компании:\nShortName: {statsnet_shortName}, FullName: {statsnet_fullName}")
+    log_message(f"Налоги: Общий - {statsnet_tax_total}, За 2022 год - {statsnet_tax_2022}")
 
-        # Извлечение JSON из ответа
-        matches = response.find("__NEXT_DATA__")
-        if matches == -1:
-            raise HTTPException(status_code=400, detail="Данные не найдены в ответе.")
+    # Формирование полей для Битрикс
+    fields = {
+        "UF_CRM_1679854080": detail_url,  # Ссылка на компанию
+        "UF_CRM_1681246853": statsnet_shortName,  # Краткое название
+        "UF_CRM_1681246872": statsnet_fullName,  # Полное название
+        "UF_CRM_1679854136": statsnet_tax_total,  # Общий налог
+        "UF_CRM_1679854188": statsnet_tax_2022,  # Налог за 2022
+    }
 
-        # Извлекаем и декодируем JSON
-        json_data_start = response.find(">", matches) + 1
-        json_data_end = response.find("</script>", json_data_start)
-        raw_json = response[json_data_start:json_data_end]
-        json_result = json.loads(raw_json)
+    # Обновляем данные в Битрикс
+    bitrix_response = await update_bitrix(company_id, fields)
+    log_message(f"Ответ Битрикс: {bitrix_response}")
 
-        # 2. Проверяем наличие компании
-        companies = json_result.get("props", {}).get("pageProps", {}).get("companies", [])
-        if not companies:
-            raise HTTPException(status_code=400, detail="Компания с указанным BIN не найдена.")
-
-        # Получаем ID компании
-        company_data = companies[0]
-        statsnet_id = company_data.get("id")
-        if not statsnet_id:
-            raise HTTPException(status_code=400, detail="Не удалось получить ID компании.")
-
-        # 3. Запрос детальной информации через Playwright
-        details_url = f"https://statsnet.co/companies/kz/{statsnet_id}"
-        details_response = await fetch_with_playwright(details_url)
-
-        # Логирование ответа
-        log_message(f"Ответ от statsnet.co (детали): {details_response}")
-
-        # Извлечение JSON из ответа
-        matches = details_response.find("__NEXT_DATA__")
-        if matches == -1:
-            raise HTTPException(status_code=400, detail="Детали компании не найдены в ответе.")
-
-        # Извлекаем и декодируем JSON
-        json_data_start = details_response.find(">", matches) + 1
-        json_data_end = details_response.find("</script>", json_data_start)
-        raw_json = details_response[json_data_start:json_data_end]
-        details_json = json.loads(raw_json)
-
-        company_details = details_json.get("props", {}).get("pageProps", {}).get("company", {}).get("company", {})
-        if not company_details:
-            raise HTTPException(status_code=400, detail="Не удалось извлечь детали компании.")
-
-        # 4. Извлечение нужных данных
-        statsnet_shortName = company_details.get("title", "")
-        statsnet_fullName = company_details.get("name", "")
-        financials = company_details.get("financials", [])
-
-        statsnet_tax_total = sum(tax.get("taxes", 0) for tax in financials)
-        statsnet_tax_2022 = sum(tax.get("taxes", 0) for tax in financials if tax.get("year") == 2022)
-
-        # Логируем данные
-        log_message(f"Детали компании: {company_details}")
-
-        # 5. Формируем данные для Bitrix24
-        fields = {
-            "fields": {
-                "UF_CRM_1679854080": search_url,
-                "UF_CRM_1679854136": statsnet_tax_total,
-                "UF_CRM_1679854188": statsnet_tax_2022,
-                "UF_CRM_1680100714": statsnet_tax_total,
-                "UF_CRM_1680100777": statsnet_tax_2022,
-                "UF_CRM_1681246853": statsnet_shortName,
-                "UF_CRM_1681246872": statsnet_fullName,
-            }
-        }
-
-        # 6. Обновление компании в Bitrix24
-        bitrix_url = f"{BITRIX_WEBHOOK_URL}crm.company.update?ID={company_id}"
-        async with httpx.AsyncClient() as client:
-            bitrix_response = await client.post(bitrix_url, json=fields)
-
-        if bitrix_response.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Ошибка обновления данных в Bitrix24: {bitrix_response.status_code}")
-
-        log_message(f"Обновление в Bitrix24: {bitrix_response.text}")
-
-        return {"status": "success", "message": "Данные компании успешно обновлены."}
-
-    except Exception as e:
-        log_message(f"Ошибка: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "success", "bitrix_response": bitrix_response}
